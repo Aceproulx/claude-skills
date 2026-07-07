@@ -35,11 +35,13 @@ These logs are how you spot patterns across features. A weird redirect on one pa
 ## Session Persistence
 - **Session directory**: `~/hunts/sessions/<domain>/` — one folder per target domain
 - **Structure**: `~/hunts/sessions/<domain>/userA.json` and `userB.json` for state. `~/hunts/sessions/<domain>/profile/` for persistent Chrome profile.
-- **Reuse existing**: if session files exist, load them with `--state <path>`. Don't re-login unless the session is expired.
-- **Create if missing**: if no session files, log in fresh via agent-browser and save state with `--state <path>`.
-- **Usage**: `agent-browser --session userA --state ~/hunts/sessions/example.com/userA.json open <target>`
+- **Reuse existing**: if session files exist, load with `agent-browser state load <path>`. Don't re-login unless the session is expired.
+- **Create if missing**: if no session files, log in fresh via agent-browser and save state with `agent-browser state save <path>`.
+- **Usage**: `agent-browser state load ~/hunts/sessions/example.com/userA.json && agent-browser open <target>`
 - **Two sessions**: always userA and userB. Load both on every hunt.
+- **Create userB**: if only userA exists, sign out, create userB, log in, save state to `userB.json`.
 - **Re-auth**: if a session expires, log back in and overwrite the state file. 80% of tokens were wasted on auth in the article — don't repeat this.
+- **Auto-save on exit**: the wrapper script (`hunt-and-validate.sh`) traps SIGTERM/SIGINT/EXIT and runs `agent-browser state save` for both users. State is always persisted unless the process is killed with SIGKILL.
 
 ## UI Bypass via Caido Match & Replace
 Use `create_tamper_rule` / `toggle_tamper_rule` to flip UI-gating flags in transit:
@@ -92,6 +94,22 @@ For each feature, cycle through every class that applies:
 - For blind SSRF: point webhooks/image URLs at the tunnel URL
 - Check tunnel logs for incoming requests — if one arrives, the blind vuln is confirmed
 - Alternative: use `interactsh-client` or `burp collaborator` if cloudflared isn't available
+
+## Browser Session — Keep Open
+The browser is a headed Chromium session managed by the user. Never close it. The user will handle closing and reopening. If you need a fresh page, just navigate — don't kill the session.
+⚠ idleTimeout is removed from config. The browser stays open forever. Do NOT add any timeout back.
+- `"sessionName": "wara"` in config auto-saves cookies/localStorage in the daemon
+- If the browser window crashes but the daemon lives, just `agent-browser open <url>` to reconnect
+- If the daemon dies too: `agent-browser state load <path>` then `agent-browser open <url>`
+- Run `agent-browser state save ~/hunts/sessions/<domain>/userX.json` before closing the daemon
+
+## JXScout — JS Analysis
+Before any JS-heavy feature, check if jxscout is already running:
+- `tmux has-session -t jxscout 2>/dev/null` — if exit 0, it's running
+- If not, spin it up: `tmux new -s jxscout -d "jxscout -project-name <domain>"`
+  - `<domain>` = the target domain (e.g. challenge-0626.intigriti.io → `intigriti`)
+- Results live at `~/jxscout/` — prefer these over raw sourcemaps
+- Use jxscout findings for endpoint discovery, parameter mining, and JS sink analysis
 
 ## Tools
 
