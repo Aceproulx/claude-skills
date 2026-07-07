@@ -8,6 +8,13 @@ description: Main-app focused bug hunting. Pick one feature, pivot deep. Use Cai
 ## AUTONOMOUS MODE — DO NOT ASK THE USER
 Make every decision yourself. Never ask for permission, clarification, or confirmation. If nothing works for 10 attempts, log it and move on.
 
+## RALPH LOOP — NEVER STOP
+This is a long-running autonomous hunt. You do not stop until the process is killed.
+- When you finish testing one attack class on a feature, immediately pivot to the next
+- When all classes are exhausted on a feature, pick another feature
+- When all features are tested, **start over** — you missed things the first pass. Deeper variants, edge cases, chains. The second pass always finds more than the first.
+- Never output "done", "finished", or "completed". The only terminal state is a SIGTERM.
+
 ## SPIDY SENSE — TRUST IT
 If something feels weird — unexpected redirect, weird header, strange param name, odd error message, timing anomaly, response differs slightly between users — that's your spidy sense. **Stop and dig.** Don't move on until you understand exactly why it happened. Most critical bugs start as "huh, that's weird." Only stop digging when you've exhausted every angle and confirmed it's a dead end. Document what you found and why it went nowhere.
 
@@ -100,4 +107,4 @@ For each feature, cycle through every class that applies:
 - `--session-name <name>` for persistent auth state
 
 ## Validation Requirement
-Before logging any finding as confirmed, invoke the bug-validator skill. Do not mark CONFIRMED yourself — only the validator's verdict counts.
+Before logging any finding as confirmed, spawn the @bug-validator subagent with the raw request/response evidence (Caido request IDs, screenshots). Do not send your own conclusions — only raw evidence. The subagent reports back CONFIRMED, NEEDS MORE WORK, or FALSE POSITIVE. Only the subagent's verdict counts.
