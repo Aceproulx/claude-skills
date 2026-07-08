@@ -51,9 +51,50 @@ Use `create_tamper_rule` / `toggle_tamper_rule` to flip UI-gating flags in trans
 - If unlocked UI reveals new endpoints, pivot into them
 
 ## Two Accounts — Always
-Create two accounts. Open `--session userA` and `--session userB`. Capture requests as userA, replay with userB's cookies via Caido `edit_request`. If userB sees userA's data, that's real IDOR.
+
+### Why
+IDOR validation requires a DIFFERENT authenticated session — seeing your own data proves nothing. You need userA → userB cross-check.
+
+### Workflow (curl-based, recommended)
+```bash
+# 1. Register both users, grab tokens
+UA=$(curl -sk -X POST "$TARGET/register" \
+  -d "username=hunter_a_$(date +%s)&password=Pass123!" \
+  -c - | grep token | awk '{print $NF}')
+
+UB=$(curl -sk -X POST "$TARGET/register" \
+  -d "username=hunter_b_$(date +%s)&password=Pass123!" \
+  -c - | grep token | awk '{print $NF}')
+
+# 2. Test IDOR — request userA's resource with userB's token
+curl -sk "$TARGET/api/profile" -b "token=$UA"    # userA's own data
+curl -sk "$TARGET/api/profile" -b "token=$UB"    # userB's own data
+
+# 3. Swap: try userA's endpoint ID with userB's token
+curl -sk "$TARGET/api/profile/17" -b "token=$UB" # userB accessing userA's profile
+
+# 4. If they match or userB sees userA's fields → IDOR confirmed
+```
+
+Adapt for session cookies (Flask, PHP) by capturing the session cookie instead of `token`.
+
+### Cookie-based fallback
+If the app uses session cookies instead of JWT tokens:
+```bash
+curl -sk -X POST "$TARGET/login" -d "username=userA&password=pass" \
+  -c /tmp/userA_cookies.txt
+curl -sk "$TARGET/api/resource" -b /tmp/userA_cookies.txt
+# Swap to userB
+curl -sk "$TARGET/api/resource" -b /tmp/userB_cookies.txt
+```
 
 ## Fuzzing
+### Body Integrity Warning
+`edit_request` prepends `\r\n\r\n` to any body you pass, corrupting form-urlencoded POST bodies. The key becomes `\r\n\r\ndisplay_name` instead of `display_name`. To work around: use `curl --proxy 127.0.0.1:8081` with the exact body you want, or prefix the body with a dummy field (e.g., `x=&real_key=value`).
+
+### Cookie Caveat
+`get_request` redacts Cookie/Set-Cookie headers as `[REDACTED]`, but `get_replay_entry` exposes raw values. When debugging auth issues, use `get_replay_entry` to see the actual cookies. `send_request` with explicit Cookie header skips the cookie jar entirely — you get full control but lose jar-based cookie persistence.
+
 - **Payloads**: `/mnt/d/Desktop/coffinxp-payloads`
 - **Path fuzzing**: `Pentester_wordlist.pay`
 - **Parameter fuzzing via Caido Automate**: set up automate sessions with `batch_send` to fuzz a single endpoint — replace values, vary types, add unexpected params. Use threads=3, request delay to avoid rate limiting.
@@ -113,11 +154,19 @@ Before any JS-heavy feature, check if jxscout is already running:
 
 ## Tools
 
-### Sending HTTP Requests — CAIDO ONLY
-- `send_request` / `edit_request` / `batch_send` / `race_window_send` for all HTTP
-- `list_requests` with HTTPQL to find requests
+### Sending HTTP Requests
+**Default: `curl --proxy 127.0.0.1:8081`** — Use curl with the Caido proxy for ALL HTTP requests unless you specifically need Caido's automation/race features. Reasons:
+- Body integrity: Caido's `edit_request` silently prepends `\r\n\r\n` to POST bodies, corrupting form-urlencoded data. Curl preserves raw bytes exactly.
+- Full control: explicit headers, cookies, timing — no abstraction to fight.
+- History: traffic flows through Caido so it appears in history/search anyway.
+
+Caido tools still useful for automation:
+- `batch_send` / `race_window_send` for parallel/race requests
 - `create_tamper_rule` / `toggle_tamper_rule` for Match & Replace
 - `create_automate_session` / `get_automate_entry` for fuzzing
+- `list_requests` with HTTPQL to find requests in history
+- `get_request` / `get_replay_entry` to inspect past requests
+- `export_curl` to convert a Caido request to a curl command
 
 ### Browser Testing — AGENT-BROWSER ONLY
 - Always `--headed` for XSS validation

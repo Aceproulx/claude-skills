@@ -43,32 +43,32 @@ All traffic goes through Caido, so it appears in the UI for further analysis.
 3. Run:
 
 ```bash
-npx tsx ~/.claude/skills/caido-mode/caido-client.ts setup <your-pat>
+npx tsx ~/.agents/skills/caido-mode/caido-client.ts setup <your-pat>
 
 # Non-default Caido instance
-npx tsx ~/.claude/skills/caido-mode/caido-client.ts setup <pat> http://192.168.1.100:8080
+npx tsx ~/.agents/skills/caido-mode/caido-client.ts setup <pat> http://192.168.1.100:8080
 
 # Or set env var instead
 export CAIDO_PAT=caido_xxxxx
 ```
 
-The `setup` command validates the PAT via the SDK (which exchanges it for an access token), then saves both the PAT and the cached access token to `~/.claude/config/secrets.json`. Subsequent runs load the cached token directly, and a valid cached token can be used even when the PAT is absent.
+The `setup` command validates the PAT via the SDK (which exchanges it for an access token), then saves both the PAT and the cached access token to `~/.agents/config/secrets.json`. Subsequent runs load the cached token directly, and a valid cached token can be used even when the PAT is absent.
 
 ### Check Status
 
 ```bash
-npx tsx ~/.claude/skills/caido-mode/caido-client.ts auth-status
+npx tsx ~/.agents/skills/caido-mode/caido-client.ts auth-status
 ```
 
 ### How Auth Works
 
 The SDK uses a device code flow internally — the PAT auto-approves it and receives an access token + refresh token. A custom `SecretsTokenCache` (implementing the SDK's `TokenCache` interface) persists these tokens to secrets.json so they survive across CLI invocations.
 
-Auth resolution: `CAIDO_PAT` env var → `secrets.json` PAT → valid cached access token → error with setup instructions
+Auth resolution: `CAIDO_PAT` env var → `~/.agents/config/secrets.json` PAT → valid cached access token → error with setup instructions
 
 ## CLI Tool
 
-Located at `~/.claude/skills/caido-mode/caido-client.ts`. All commands output JSON.
+Located at `~/.agents/skills/caido-mode/caido-client.ts`. All commands output JSON.
 
 ---
 
@@ -618,19 +618,76 @@ npx tsx caido-client.ts search 'preset:"API 4xx"' --limit 20
 
 ---
 
+## MCP Server Tools (caido-mcp-server)
+
+When connected via opencode's MCP server (caido-mcp-server fork at `Aceproulx/caido-mcp-server`), these tools are available directly:
+
+### caido_send_request
+
+Sends a raw HTTP request via Caido's replay system. The full request/response is returned inline.
+
+```json
+{
+  "raw": "POST /api/login HTTP/1.1\r\nHost: target.com\r\nContent-Type: application/json\r\nContent-Length: 39\r\n\r\n{\"username\":\"admin\",\"password\":\"test\"}",
+  "host": "target.com",
+  "sessionId": "optional-previous-session-id"
+}
+```
+
+**Key details:**
+- `sessionId` is auto-managed if omitted (creates a fresh session), but you can pass the returned `sessionId` to chain multiple requests in the same session
+- Cookie jar is **enabled by default** — `Set-Cookie` from responses auto-injects into the next request on the same session
+- Pass `setCookies: {"CookieName": "new-value"}` to override specific cookies mid-session without clearing the jar
+- Pass `useCookieJar: false` to disable jar for a single call
+- **No header redaction by default** — all header values (Authorization, Cookie, etc.) are visible in output. Redact with `CAIDO_REDACT_HEADERS=true` env var
+- Response diff tracks repeated identical responses via body hash (output includes `diff` field when same response repeats)
+- Pools up to 10s; on timeout returns `entryId` for follow-up via `caido_get_replay_entry`
+
+### caido_get_replay_entry
+
+Retrieve a specific replay entry's request + response by entry ID or by session.
+
+### caido_export_curl
+
+Convert a request to a curl command (handy for PoCs). Works by request ID.
+
+### caido_get_session_cookies
+
+List cookies stored in the session jar for a given URL. Cookie **values** are returned (not just names).
+
+### caido_clear_session_cookies
+
+Wipe the session jar between test runs.
+
+### Batch & Race Window Tools
+
+- `caido_batch_send` — Send multiple requests concurrently
+- `caido_race_window_send` — Race-condition style parallel sends
+
+### Workflow: Send a request with body via MCP tools
+
+```
+caido_send_request with:
+  raw: "POST /path HTTP/1.1\r\nHost: target.com\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}"
+  host: "target.com"
+```
+
+The MCP server handles the Caido replay flow internally (create session → start task → update draft → start replay task → poll for response).
+
 ## Instructions for Claude
 
-1. **PREFER `edit` OVER `replay --raw`** - preserves cookies/auth automatically
-2. **Workflow**: Search → find request with valid auth → use that ID for all tests via `edit`
-3. **Don't dump raw requests into context** - use `--compact` or `--headers-only` when exploring
-4. **Always check auth first**: `health` to verify connection, then `recent --limit 1`
-5. **ALWAYS NAME REPLAY TABS**: `rename-session <id> "idor-user-profile"`
+1. **PREFER `caido_send_request` OVER `edit`/`replay`** when using MCP tools — it handles cookie jar, session management, and response polling automatically
+2. **Workflow**: Use `caido_send_request` to probe endpoints. Chain requests by reusing the returned `sessionId` to maintain auth
+3. **Don't dump raw requests into context** - use `--compact` when using the CLI client
+4. **Always check auth first**: Try a probe request first; check if the response reflects auth state
+5. **ALWAYS NAME REPLAY TABS**: When using CLI, `rename-session <id> "idor-user-profile"`
 6. **Create findings** for anything interesting - they show up in Caido's Findings tab
-7. **Use `export-curl`** when building PoCs for reports
-8. **Create filter presets** for recurring searches to save typing
-9. **Use environments** to store test data (victim IDs, tokens, etc.)
+7. **Use `caido_export_curl`** when building PoCs for reports
+8. **For body requests**: Include `Content-Length` matching the actual body size. Use `Connection: close` to avoid keep-alive complications
+9. **Cookie overrides**: Use `setCookies` param to swap auth tokens mid-session: `setCookies: {"session": "attacker-token"}`
 10. **Output is JSON** - parse response fields as needed
 11. **NEVER use `NOT` in HTTPQL** - it doesn't exist. Use negated operators: `ne`, `ncont`, `nlike`, `nregex`
+12. **Headers are NOT redacted** — all header values (Authorization, Cookie, Set-Cookie, API keys) are visible in tool output. If you need redaction, set env var `CAIDO_REDACT_HEADERS=true` on the MCP server
 
 ## Performance & Context Optimization
 
@@ -642,7 +699,8 @@ npx tsx caido-client.ts search 'preset:"API 4xx"' --limit 20
 
 ## Error Handling
 
-- **Auth errors**: Run `npx tsx caido-client.ts auth-status` to check, re-setup with `npx tsx caido-client.ts setup <pat>`
+- **Auth errors** (caido-client CLI): Run `npx tsx ~/.agents/skills/caido-mode/caido-client.ts auth-status` to check, re-setup with `npx tsx ~/.agents/skills/caido-mode/caido-client.ts setup <pat>`
+- **Auth errors** (MCP server): Tokens stored at `~/.caido-mcp/token.json`. Re-auth: `cd /home/aceos/caido-mcp-server && ./caido-mcp-server login --url http://127.0.0.1:8081`
 - **Connection refused**: Caido not running → `npx tsx caido-client.ts health`
 - **InstanceNotReadyError**: Caido is starting up, wait and retry
 
@@ -652,3 +710,24 @@ npx tsx caido-client.ts search 'preset:"API 4xx"' --limit 20
 - `spider` - Crawling with Katana (uses Caido as proxy)
 - `website-fuzzing` - Remote ffuf fuzzing on hunt6
 - `JsAnalyzer` - JS analysis for traffic-discovered files
+- `bug-hunting` - Main-app focused bug hunting workflow; uses Caido MCP tools for request replay and analysis
+- `bug-validator` - Adversarial validation pass for security findings; re-tests via Caido replay
+
+## MCP Server Config
+
+The forked caido-mcp-server is configured in `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "mcp": {
+    "caido": {
+      "type": "local",
+      "command": ["/home/aceos/caido-mcp-server/caido-mcp-server", "serve"],
+      "enabled": true,
+      "environment": { "CAIDO_URL": "http://127.0.0.1:8081" }
+    }
+  }
+}
+```
+
+OAuth tokens are stored at `~/.caido-mcp/token.json`. To re-authenticate: run `./caido-mcp-server login --url http://127.0.0.1:8081` from `/home/aceos/caido-mcp-server/`.
