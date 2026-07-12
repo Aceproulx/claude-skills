@@ -79,11 +79,44 @@ transit:
   flags, create a tamper rule, reload.
 - If the unlocked UI reveals new endpoints, pivot into them.
 
-## Two Accounts — Always
-
+## Two or more Accounts — Always
 ### Why
 IDOR validation requires a DIFFERENT authenticated session — seeing your own
 data proves nothing. You need userA → userB cross-check.
+
+### Registration email — MANDATORY, NO EXCEPTIONS
+**Never register with `test@test.com`, `test@example.com`, or any made-up
+domain.** Registration/verification emails must arrive somewhere real or the
+account is useless the moment the target requires email verification.
+
+Every registration email MUST follow this pattern:
+```
+aceproulx+<target>-a@intigriti.me   # userA
+aceproulx+<target>-b@intigriti.me   # userB
+```
+(`-` also works as the separator if `+` gets stripped by a target's input
+validation — try `+` first, fall back to `-`.) These forward into the
+hackbot inbox — see the `@email-inbox-check` skill for how to list/read them.
+
+### Before registering ANY account, in this order:
+1. Check `~/hunts/sessions/<domain>/userA.creds` and `userB.creds` for an
+   existing account. If found and not dead/banned, log in with those
+   credentials instead of registering a new one.
+2. If no creds file exists, register fresh using the address pattern above.
+3. Immediately after successful registration — before doing anything
+   else — write the credentials:
+   ```bash
+   cat > ~/hunts/sessions/${TARGET}/userA.creds <<EOF
+   email=aceproulx+${TARGET}-a@intigriti.me
+   password=${GENERATED_PASSWORD}
+   created=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+   EOF
+   chmod 600 ~/hunts/sessions/${TARGET}/userA.creds
+   ```
+   Same for userB. This is not an end-of-hunt cleanup step — do it
+   immediately or a crash/pivot mid-hunt loses the account.
+4. If the target sends a verification email, check the inbox using the
+   `@email-inbox-check` skill's filtered list — never poll the raw endpoint.
 
 ### Workflow (curl-based)
 ```bash
