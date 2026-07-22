@@ -139,6 +139,23 @@ curl -sk "$TARGET/api/profile/17" -b "token=$UB" # userB accessing userA's profi
 # 4. If they match or userB sees userA's fields → IDOR confirmed
 ```
 
+## WAF Blocks / IP Rotation
+
+If requests start getting blocked by a WAF (repeated 403s, CAPTCHA
+challenges, rate-limit walls that don't clear, or a sudden drop in response
+variety suggesting fingerprinting) — do not keep retrying the same IP.
+Rotate immediately:
+
+```bash
+changeip
+```
+
+- This triggers the VPN server switch and prints one of three outcomes:
+  - `IP changed successfully` — resume testing immediately.
+  - `try again in X minutes Y seconds` — respect the cooldown, don't spam
+    the command. Sleep for the stated duration (or close to it) then retry
+    `changeip` before resuming requests.
+
 ### Cookie-based fallback
 ```bash
 curl -sk -X POST "$TARGET/login" -d "username=userA&password=pass" \
